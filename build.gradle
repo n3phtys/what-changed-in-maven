@@ -1,9 +1,10 @@
 plugins {
     id 'java'
     id 'org.jetbrains.kotlin.jvm' version '1.3.60'
+    id 'application'
 }
 
-group 'org.example'
+group 'com.github.n3phtys'
 version '1.0-SNAPSHOT'
 
 sourceCompatibility = 1.8
@@ -18,6 +19,10 @@ dependencies {
     implementation("com.github.ajalt:clikt:2.3.0")
     compile group: 'org.apache.maven', name: 'maven-model', version: '3.6.3'
 
+}
+
+application {
+    mainClassName = 'com.github.n3phtys.mavengitchanges.MainKt'
 }
 
 compileKotlin {

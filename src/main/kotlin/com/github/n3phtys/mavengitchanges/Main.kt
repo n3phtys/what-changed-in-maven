@@ -1,3 +1,5 @@
+package com.github.n3phtys.mavengitchanges
+
 import com.github.ajalt.clikt.core.*
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.*
@@ -13,7 +15,12 @@ class Hello : CliktCommand() {
 
 
     override fun run() {
-        App(parentPomFile, comparedToCommit, includeDependents, includeDependencies).run().forEach { println(it) }
+        App(
+            parentPomFile,
+            comparedToCommit,
+            includeDependents,
+            includeDependencies
+        ).run().forEach { println(it) }
     }
 }
 
