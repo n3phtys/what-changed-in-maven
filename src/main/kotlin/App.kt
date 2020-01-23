@@ -9,7 +9,12 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 
-class App(val rootPomXml: File, val compareCommit: String?, val includeDependents: Boolean) {
+class App(
+    val rootPomXml: File,
+    val compareCommit: String?,
+    val includeDependents: Boolean,
+    val includeDependencies: Boolean
+) {
     val rootDir = rootPomXml.parentFile
 
     init {
@@ -33,10 +38,23 @@ class App(val rootPomXml: File, val compareCommit: String?, val includeDependent
         }
 
         //to each pom.xml, find dependents, also include them if requested
-        val output: Set<Module> = if (includeDependents) {
+        val output: Set<Module> = if (includeDependencies) {
             val allPoms = findAllPoms(rootDir)
             val foundModules = mutableSetOf<Module>()
-            foundModules.addAll(foundModules)
+            val queue = ArrayDeque<Module>()
+            queue.addAll(modules)
+            while (queue.isNotEmpty()) {
+                val mod = queue.poll()
+                if (!foundModules.contains(mod)) {
+                    foundModules.add(mod)
+                    val dependents: Set<Module> = findDependencies(allPoms, mod)
+                    queue.addAll(dependents)
+                }
+            }
+            foundModules
+        } else if (includeDependents) {
+            val allPoms = findAllPoms(rootDir)
+            val foundModules = mutableSetOf<Module>()
             val queue = ArrayDeque<Module>()
             queue.addAll(modules)
             while (queue.isNotEmpty()) {
@@ -52,12 +70,29 @@ class App(val rootPomXml: File, val compareCommit: String?, val includeDependent
             modules
         }
 
-        return output.map { it.moduleId }
+        return output.map { it.model.transformToIdString() }
+    }
+
+    private fun findDependencies(allPoms: Map<File, Model>, mod: Module): Set<Module> {
+        return mod.model.dependencies.flatMap { dependency ->
+            allPoms.entries.filter { it.value.transformToIdString() == dependency.transformDependencyToString() }
+        }.map { buildModuleFromFile(it.key, it.value, mod) }.toSet()
+    }
+
+    private fun buildModuleFromFile(file: File, model: Model, depndent: Module): Module {
+        return Module(file, computeSingleFileStamp(file))
+    }
+
+    private fun computeSingleFileStamp(file: File): String {
+        val key = file.absolutePath.substring(rootDir.absolutePath.length + 1)
+        val ts =
+            "git log -1 --format=\"%ad\" -- $key".runCmdInPwd(rootDir)!!.trim().replace("\"", "")
+        return ts
     }
 
     private fun findDependents(allPoms: Map<File, Model>, module: Module): Set<Module> {
         return allPoms.entries.filter {
-            it.value.dependencies.map { it.transformDependencyToString() }.contains(module.moduleId)
+            it.value.dependencies.map { it.transformDependencyToString() }.contains(module.moduleId())
         }.map { tryParseModule(it.key) }.toSet()
     }
 
@@ -65,12 +100,14 @@ class App(val rootPomXml: File, val compareCommit: String?, val includeDependent
         TODO("not yet implemented")
     }
 
+
     private fun loadModules(rootDir: File, compareCommit: String): Set<Module> {
+        val commit = compareCommit ?: "HEAD"
         val dirChanges =
-            "git ls-tree -r -d --name-only HEAD | while read filename; do   echo \"\$(git log -1 --format=\"%ad\" -- \$filename) \$filename\"; done"
+            "git ls-tree -r -d --name-only $commit | while read filename; do   echo \"\$(git log -1 --format=\"%ad\" -- \$filename) \$filename\"; done"
         val listDirsInGeneral = "git ls-tree -r -d --name-only HEAD".runCmdInPwd(rootDir)!!.trim().lines()
         val modifiedAt = listDirsInGeneral.map {
-            val op = "git log -1 --format=\"%ad\" -- $it".runCmdInPwd(rootDir)!!
+            val op = "git log -1 --format=\"%ad\" ${compareCommit ?: "--"} $it".runCmdInPwd(rootDir)!!
             Pair(it, op.trim().replace("\"", ""))
         }.toMap()
         return modifiedAt.keys.filter { key -> rootDir.resolve(key).resolve("pom.xml").canRead() }
@@ -84,18 +121,19 @@ class App(val rootPomXml: File, val compareCommit: String?, val includeDependent
 
     private fun findAllPoms(rootDir: File): Map<File, Model> {
         val output = mutableMapOf<File, Model>()
-        val cmd = "git ls-tree -r --name-only HEAD | grep --color=never pom.xml"
+        val cmd = "git ls-tree -r --name-only HEAD"
         output.put(rootPomXml, rootPomXml.parsePOM())
-        cmd.runCmdInPwd(rootDir)!!.lines().map { File(it) }.filter { it.canRead() }.forEach {
-            output.put(it, it.parsePOM())
-        }
+        cmd.runCmdInPwd(rootDir)!!.lines().filter { it.contains("pom.xml") }.map { rootDir.resolve(it.trim()) }
+            .filter { it.canRead() }.forEach {
+                output.put(it, it.parsePOM())
+            }
         return output
     }
 }
 
 data class Module(val location: File, val timeStamp: String) {
     val model = MavenXpp3Reader().read(FileReader(location))
-    val moduleId = model.transformToIdString()
+    fun moduleId() = model.transformToIdString()
 }
 
 
@@ -112,11 +150,12 @@ fun File.parsePOM(): Model {
 }
 
 private fun Model.transformToIdString(): String {
-    return this.groupId ?: (this.parent.groupId) + "::" + this.artifactId + "::" + this.version ?: (this.parent.version)
+    return this.groupId ?: (this.parent.groupId) + "::" + this.artifactId
+    /*+ "::" + this.version ?: (this.parent.version)*/ //TODO: fix version == null case
 }
 
 private fun Dependency.transformDependencyToString(): String {
-    return this.groupId + "::" + this.artifactId + "::" + this.version
+    return this.groupId + "::" + this.artifactId /*+ "::" + this.version*/ //TODO: fix version == null case
 }
 
 
