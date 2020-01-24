@@ -14,8 +14,10 @@ import java.util.concurrent.TimeUnit
 class App(
     val rootPomXml: File,
     val compareCommit: String?,
+    val currentCommit: String?,
     val includeDependents: Boolean,
-    val includeDependencies: Boolean
+    val includeDependencies: Boolean,
+    val useCheckout: Boolean
 ) {
     val rootDir = rootPomXml.parentFile
 
@@ -27,17 +29,31 @@ class App(
 
 
     fun run(): List<String> {
+        val current = rootDir.getHeadCommitHash()
+        val newRelease = currentCommit ?: "HEAD"
+        val oldRelease = compareCommit ?: "--"
+
+        //check out old code if requested
+        if (useCheckout && compareCommit != null) {
+            rootDir.checkoutCommit(oldRelease)
+        }
+        val oldSet = if (compareCommit != null) {
+            loadModules(rootDir, compareCommit)
+        } else {
+            setOf()
+        }
+
+        //check out new code if requested
+        if (useCheckout && currentCommit != null) {
+            rootDir.checkoutCommit(newRelease)
+        }
+
         //retrieve current pom.xml with timestamps of each module
         //remove all pom.xmls that are not actual artifacts
-        val allModules: Set<Module> = loadModules(rootDir, "--")
+        val allModules: Set<Module> = loadModules(rootDir, newRelease) //TODO: does this actually work?
 
         //compare with old list (if one is set), remove all exact duplicates
-        val modules = if (compareCommit != null) {
-            val oldSet = loadModules(rootDir, compareCommit)
-            allModules.filter { !oldSet.contains(it) }.toSet()
-        } else {
-            allModules
-        }
+        val modules = allModules.filter { !oldSet.contains(it) }.toSet()
 
         //to each pom.xml, find dependents, also include them if requested
         val output: Set<Module> = if (includeDependencies) {
@@ -72,7 +88,13 @@ class App(
             modules
         }
 
-        return output.map { it.model.transformToIdString() }
+
+        //back to original commit
+        if (useCheckout) {
+            rootDir.checkoutCommit(current)
+        }
+
+        return output.filter { it.model?.artifactId?.isNotBlank() == true }.map { it.model.transformToIdString() }
     }
 
     private fun findDependencies(allPoms: Map<File, Model>, mod: Module): Set<Module> {
@@ -104,16 +126,13 @@ class App(
 
 
     private fun loadModules(rootDir: File, compareCommit: String): Set<Module> {
-        val commit = compareCommit ?: "HEAD"
-        val dirChanges =
-            "git ls-tree -r -d --name-only $commit | while read filename; do   echo \"\$(git log -1 --format=\"%ad\" -- \$filename) \$filename\"; done"
-        val listDirsInGeneral = "git ls-tree -r -d --name-only HEAD".runCmdInPwd(rootDir)!!.trim().lines()
+        val listDirsInGeneral = "git ls-tree -r -d --name-only $compareCommit".runCmdInPwd(rootDir)!!.trim().lines()
         val modifiedAt = listDirsInGeneral.map {
-            val op = "git log -1 --format=\"%ad\" ${compareCommit ?: "--"} $it".runCmdInPwd(rootDir)!!
+            val op = "git log -1 --format=\"%ad\" $compareCommit $it".runCmdInPwd(rootDir)!!
             Pair(it, op.trim().replace("\"", ""))
         }.toMap()
         return modifiedAt.keys.filter { key -> rootDir.resolve(key).resolve("pom.xml").canRead() }
-            .map { buildModule(it, modifiedAt[it]!!) }.toSet()
+            .map { buildModule(it, modifiedAt[it] ?: error("INVALID REF $it")) }.toSet()
     }
 
     private fun buildModule(key: String, timeStamp: String): Module {
@@ -123,11 +142,15 @@ class App(
 
     private fun findAllPoms(rootDir: File): Map<File, Model> {
         val output = mutableMapOf<File, Model>()
-        val cmd = "git ls-tree -r --name-only HEAD"
-        output.put(rootPomXml, rootPomXml.parsePOM())
-        cmd.runCmdInPwd(rootDir)!!.lines().filter { it.contains("pom.xml") }.map { rootDir.resolve(it.trim()) }
-            .filter { it.canRead() }.forEach {
-                output.put(it, it.parsePOM())
+        val cmd = "git ls-tree -r -d --name-only HEAD"
+        output[rootPomXml] = rootPomXml.parsePOM()
+        val stout = cmd.runCmdInPwd(rootDir)!!.lines()
+        stout.map { "$it/pom.xml" }.map { rootDir.resolve(it.trim()) }
+            .filter { it.exists() && it.canRead() }.forEach {
+                val model = it.parsePOM()
+                if (model.artifactId?.isNotBlank() == true) {
+                    output[it] = model
+                }
             }
         return output
     }
@@ -138,6 +161,16 @@ data class Module(val location: File, val timeStamp: String) {
     fun moduleId() = model.transformToIdString()
 }
 
+fun File.getHeadCommitHash(): String {
+    val cmd = "git rev-parse HEAD"
+    val output = cmd.runCmdInPwd(this)!!.trim()
+    return output
+}
+
+fun File.checkoutCommit(hashOrTag: String) {
+    val cmd = "git checkout $hashOrTag"
+    val output = cmd.runCmdInPwd(this)
+}
 
 fun File.isAGitRepo(): Boolean {
     val res = "git rev-parse --is-inside-work-tree".runCmdInPwd(this)
@@ -152,25 +185,29 @@ fun File.parsePOM(): Model {
 }
 
 private fun Model.transformToIdString(): String {
-    return this.groupId ?: (this.parent.groupId) + "::" + this.artifactId
+    return this.groupId ?: (this.parent.groupId) + if (this.artifactId != null) {
+        "::" + this.artifactId
+    } else ""
     /*+ "::" + this.version ?: (this.parent.version)*/ //TODO: fix version == null case
 }
 
 private fun Dependency.transformDependencyToString(): String {
-    return this.groupId + "::" + this.artifactId /*+ "::" + this.version*/ //TODO: fix version == null case
+    return this.groupId + if (this.artifactId != null) {
+        "::" + this.artifactId
+    } else "" /*+ "::" + this.version*/ //TODO: fix version == null case
 }
 
 
 fun String.runCmdInPwd(workingDir: File): String? {
     try {
         val parts = this.split("\\s".toRegex())
-        val proc = ProcessBuilder(*parts.toTypedArray())
+        val process = ProcessBuilder(*parts.toTypedArray())
             .directory(workingDir)
             .redirectOutput(ProcessBuilder.Redirect.PIPE)
             .redirectError(ProcessBuilder.Redirect.PIPE)
             .start()
-        proc.waitFor(180, TimeUnit.SECONDS)
-        return proc.inputStream.bufferedReader().readText()
+        process.waitFor(300, TimeUnit.SECONDS)
+        return process.inputStream.bufferedReader().readText()
     } catch (e: IOException) {
         e.printStackTrace()
         return null
