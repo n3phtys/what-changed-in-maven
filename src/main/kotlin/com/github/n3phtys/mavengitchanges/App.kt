@@ -12,15 +12,15 @@ import java.util.concurrent.TimeUnit
 
 
 class App(
-    val rootPomXml: File,
-    val compareCommit: String?,
-    val currentCommit: String?,
-    val includeDependents: Boolean,
-    val includeDependencies: Boolean,
-    val useCheckout: Boolean,
-    val timeExecution: Boolean
+    private val rootPomXml: File,
+    private val compareCommit: String?,
+    private val currentCommit: String?,
+    private val includeDependents: Boolean,
+    private val includeDependencies: Boolean,
+    private val useCheckout: Boolean,
+    private val timeExecution: Boolean
 ) {
-    val rootDir = rootPomXml.parentFile
+    private val rootDir: File = rootPomXml.parentFile
 
     init {
         if (!rootDir.isAGitRepo()) {
@@ -56,7 +56,7 @@ class App(
         }
 
         //retrieve current pom.xml with timestamps of each module
-        //remove all pom.xmls that are not actual artifacts
+        //remove all pom.xml that are not actual artifacts
         val allModules: Set<Module> = loadModules(rootDir, newRelease) //TODO: does this actually work correctly?
         timer.print("computing modules of new commit")
 
@@ -79,7 +79,7 @@ class App(
                     queue.addAll(dependents)
                 }
             }
-            timer.print("dependences queue completion")
+            timer.print("dependencies queue completion")
             foundModules
         } else if (includeDependents) {
             val allPoms = findAllPoms(rootDir)
@@ -109,7 +109,7 @@ class App(
         }
 
         val finalResult =
-            output.filter { it.model?.artifactId?.isNotBlank() == true }.map { it.model.transformToIdString() }
+            output.filter { it.model.artifactId?.isNotBlank() == true }.map { it.model.transformToIdString() }
         timer.print("computation of final result")
         return finalResult
     }
@@ -120,20 +120,18 @@ class App(
         }.map { buildModuleFromFile(it.key, it.value, mod) }.toSet()
     }
 
-    private fun buildModuleFromFile(file: File, model: Model, depndent: Module): Module {
+    private fun buildModuleFromFile(file: File, model: Model, dependent: Module): Module {
         return Module(file, computeSingleFileStamp(file))
     }
 
     private fun computeSingleFileStamp(file: File): String {
         val key = file.absolutePath.substring(rootDir.absolutePath.length + 1)
-        val ts =
-            "git log -1 --format=\"%ad\" -- $key".runCmdInPwd(rootDir)!!.trim().replace("\"", "")
-        return ts
+        return "git log -1 --format=\"%ad\" -- $key".runCmdInPwd(rootDir)!!.trim().replace("\"", "")
     }
 
     private fun findDependents(allPoms: Map<File, Model>, module: Module): Set<Module> {
-        return allPoms.entries.filter {
-            it.value.dependencies.map { it.transformDependencyToString() }.contains(module.moduleId())
+        return allPoms.entries.filter { entry ->
+            entry.value.dependencies.map { it.transformDependencyToString() }.contains(module.moduleId())
         }.map { tryParseModule(it.key) }.toSet()
     }
 
@@ -173,17 +171,17 @@ class App(
     }
 }
 
-class PrintTimer(private val actuallyPrint: Boolean, val name: String = "basic") {
+class PrintTimer(private val actuallyPrint: Boolean, private val name: String = "basic") {
     private val startOfLifecycleNanos = System.nanoTime()
     private var startOfIntervalNanos = startOfLifecycleNanos
 
-    fun print(stepname: String? = null) {
+    fun print(stepName: String? = null) {
         val calledAtNano = System.nanoTime()
         val msRound = TimeUnit.NANOSECONDS.toMillis(calledAtNano - startOfIntervalNanos)
         val msTotal = TimeUnit.NANOSECONDS.toMillis(calledAtNano - startOfLifecycleNanos)
         startOfIntervalNanos = calledAtNano
         if (actuallyPrint) {
-            val step = if (stepname != null) "'$stepname'" else "Previous step"
+            val step = if (stepName != null) "'$stepName'" else "Previous step"
             println("Timer $name - $step took $msRound ms, with total time lapsed of $msTotal ms.")
         }
     }
@@ -191,14 +189,13 @@ class PrintTimer(private val actuallyPrint: Boolean, val name: String = "basic")
 
 
 data class Module(val location: File, val timeStamp: String) {
-    val model = MavenXpp3Reader().read(FileReader(location))
+    val model: Model = MavenXpp3Reader().read(FileReader(location))!!
     fun moduleId() = model.transformToIdString()
 }
 
 fun File.getHeadCommitHash(): String {
     val cmd = "git rev-parse HEAD"
-    val output = cmd.runCmdInPwd(this)!!.trim()
-    return output
+    return cmd.runCmdInPwd(this)!!.trim()
 }
 
 fun File.checkoutCommit(hashOrTag: String) {
@@ -208,14 +205,13 @@ fun File.checkoutCommit(hashOrTag: String) {
 
 fun File.isAGitRepo(): Boolean {
     val res = "git rev-parse --is-inside-work-tree".runCmdInPwd(this)
-    return res!!.trim().equals(true.toString())
+    return res!!.trim() == true.toString()
 }
 
 
 fun File.parsePOM(): Model {
     val reader = MavenXpp3Reader()
-    val model: Model = reader.read(FileReader(this))
-    return model
+    return reader.read(FileReader(this))
 }
 
 private fun Model.transformToIdString(): String {
@@ -233,7 +229,7 @@ private fun Dependency.transformDependencyToString(): String {
 
 
 fun String.runCmdInPwd(workingDir: File): String? {
-    try {
+    return try {
         val parts = this.split("\\s".toRegex())
         val process = ProcessBuilder(*parts.toTypedArray())
             .directory(workingDir)
@@ -241,9 +237,9 @@ fun String.runCmdInPwd(workingDir: File): String? {
             .redirectError(ProcessBuilder.Redirect.PIPE)
             .start()
         process.waitFor(300, TimeUnit.SECONDS)
-        return process.inputStream.bufferedReader().readText()
+        process.inputStream.bufferedReader().readText()
     } catch (e: IOException) {
         e.printStackTrace()
-        return null
+        null
     }
 }
