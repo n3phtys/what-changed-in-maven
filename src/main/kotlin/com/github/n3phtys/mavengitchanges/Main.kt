@@ -14,6 +14,7 @@ class Hello : CliktCommand() {
     val includeDependencies: Boolean by option(help = "should dependency modules also be included in output? often recommandable").flag()
     val useCheckout: Boolean by option(help = "should git checkout be used for exact information?").flag()
     val currentCommit: String? by option(help = "commit hash or tag from which to compare (the newer / current release)")
+    val timeExecution: Boolean by option(help = "print timer for each step").flag()
 
     override fun run() {
         App(
@@ -22,7 +23,8 @@ class Hello : CliktCommand() {
             currentCommit,
             includeDependents,
             includeDependencies,
-            useCheckout
+            useCheckout,
+            timeExecution
         ).run().forEach { println(it) }
     }
 }

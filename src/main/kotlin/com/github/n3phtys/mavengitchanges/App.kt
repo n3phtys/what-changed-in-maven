@@ -17,7 +17,8 @@ class App(
     val currentCommit: String?,
     val includeDependents: Boolean,
     val includeDependencies: Boolean,
-    val useCheckout: Boolean
+    val useCheckout: Boolean,
+    val timeExecution: Boolean
 ) {
     val rootDir = rootPomXml.parentFile
 
@@ -29,35 +30,44 @@ class App(
 
 
     fun run(): List<String> {
+        val timer = PrintTimer(timeExecution)
+
         val current = rootDir.getHeadCommitHash()
         val newRelease = currentCommit ?: "HEAD"
         val oldRelease = compareCommit ?: "--"
 
         //check out old code if requested
+        timer.print("setup")
         if (useCheckout && compareCommit != null) {
             rootDir.checkoutCommit(oldRelease)
+            timer.print("checkout of old commit")
         }
         val oldSet = if (compareCommit != null) {
             loadModules(rootDir, compareCommit)
         } else {
             setOf()
         }
+        timer.print("computing modules of old commit")
 
         //check out new code if requested
         if (useCheckout && currentCommit != null) {
             rootDir.checkoutCommit(newRelease)
+            timer.print("checkout of new commit")
         }
 
         //retrieve current pom.xml with timestamps of each module
         //remove all pom.xmls that are not actual artifacts
-        val allModules: Set<Module> = loadModules(rootDir, newRelease) //TODO: does this actually work?
+        val allModules: Set<Module> = loadModules(rootDir, newRelease) //TODO: does this actually work correctly?
+        timer.print("computing modules of new commit")
 
         //compare with old list (if one is set), remove all exact duplicates
         val modules = allModules.filter { !oldSet.contains(it) }.toSet()
+        timer.print("cross-intersecting result sets")
 
         //to each pom.xml, find dependents, also include them if requested
         val output: Set<Module> = if (includeDependencies) {
             val allPoms = findAllPoms(rootDir)
+            timer.print("finding poms")
             val foundModules = mutableSetOf<Module>()
             val queue = ArrayDeque<Module>()
             queue.addAll(modules)
@@ -69,9 +79,11 @@ class App(
                     queue.addAll(dependents)
                 }
             }
+            timer.print("dependences queue completion")
             foundModules
         } else if (includeDependents) {
             val allPoms = findAllPoms(rootDir)
+            timer.print("finding poms")
             val foundModules = mutableSetOf<Module>()
             val queue = ArrayDeque<Module>()
             queue.addAll(modules)
@@ -83,6 +95,7 @@ class App(
                     queue.addAll(dependents)
                 }
             }
+            timer.print("dependents queue completion")
             foundModules
         } else {
             modules
@@ -92,9 +105,13 @@ class App(
         //back to original commit
         if (useCheckout) {
             rootDir.checkoutCommit(current)
+            timer.print("checkout of previous commit")
         }
 
-        return output.filter { it.model?.artifactId?.isNotBlank() == true }.map { it.model.transformToIdString() }
+        val finalResult =
+            output.filter { it.model?.artifactId?.isNotBlank() == true }.map { it.model.transformToIdString() }
+        timer.print("computation of final result")
+        return finalResult
     }
 
     private fun findDependencies(allPoms: Map<File, Model>, mod: Module): Set<Module> {
@@ -155,6 +172,23 @@ class App(
         return output
     }
 }
+
+class PrintTimer(private val actuallyPrint: Boolean, val name: String = "basic") {
+    private val startOfLifecycleNanos = System.nanoTime()
+    private var startOfIntervalNanos = startOfLifecycleNanos
+
+    fun print(stepname: String? = null) {
+        val calledAtNano = System.nanoTime()
+        val msRound = TimeUnit.NANOSECONDS.toMillis(calledAtNano - startOfIntervalNanos)
+        val msTotal = TimeUnit.NANOSECONDS.toMillis(calledAtNano - startOfLifecycleNanos)
+        startOfIntervalNanos = calledAtNano
+        if (actuallyPrint) {
+            val step = if (stepname != null) "'$stepname'" else "Previous step"
+            println("Timer $name - $step took $msRound ms, with total time lapsed of $msTotal ms.")
+        }
+    }
+}
+
 
 data class Module(val location: File, val timeStamp: String) {
     val model = MavenXpp3Reader().read(FileReader(location))
